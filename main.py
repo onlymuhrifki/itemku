@@ -24,13 +24,22 @@ class ItemkuMonitor:
         self.logger = logging.getLogger(__name__)
         
         try:
-            firebase_creds_json = os.getenv('FIREBASE_CREDENTIALS')
-            if firebase_creds_json:
-                cred_dict = json.loads(firebase_creds_json)
-                cred = credentials.Certificate(cred_dict)
-            else:
-                cred = credentials.Certificate("itemku.json")
-                
+            # Create the credential dictionary from environment variables
+            cred_dict = {
+                "type": "service_account",
+                "project_id": os.getenv('FIREBASE_PROJECT_ID'),
+                "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
+                "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
+                "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
+                "client_id": os.getenv('FIREBASE_CLIENT_ID'),
+                "auth_uri": os.getenv('FIREBASE_AUTH_URI'),
+                "token_uri": os.getenv('FIREBASE_TOKEN_URI'),
+                "auth_provider_x509_cert_url": os.getenv('FIREBASE_AUTH_PROVIDER_CERT_URL'),
+                "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_CERT_URL')
+            }
+            
+            cred = credentials.Certificate(cred_dict)
+            
             # Initialize Firebase only once
             firebase_admin.initialize_app(cred, {
                 'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
@@ -41,6 +50,7 @@ class ItemkuMonitor:
             self.logger.error(f"Firebase initialization error: {str(e)}")
             raise
         
+        # Rest of the initialization remains the same
         self.api_key = os.getenv('API_KEY')
         self.api_secret = os.getenv('API_SECRET')
         self.base_url = "https://tokoku-gateway.itemku.com/api"
