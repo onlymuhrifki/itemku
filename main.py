@@ -423,7 +423,12 @@ class ItemkuMonitor:
             except Exception as e:
                 self.logger.error(f"Error displaying order: {str(e)}")
                 continue
-
+    def escape_telegram_message(self, text):
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
+        
     def monitor(self):
         print(f"{Fore.CYAN}Starting Monitor...{Style.RESET_ALL}")
         
