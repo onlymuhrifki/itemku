@@ -23,16 +23,26 @@ class ItemkuMonitor:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.logger = logging.getLogger(__name__)
         
-        firebase_creds_json = os.getenv('FIREBASE_CREDENTIALS')
-        if firebase_creds_json:
-            cred = credentials.Certificate(json.loads(firebase_creds_json))
-        else:
-            cred = credentials.Certificate("itemku.json")
+        try:
+            firebase_creds_json = os.getenv('FIREBASE_CREDENTIALS')
+            if firebase_creds_json:
+                cred_dict = json.loads(firebase_creds_json)
+                cred = credentials.Certificate(cred_dict)
+            else:
+                cred = credentials.Certificate("itemku.json")
+                
+            firebase_admin.initialize_app(cred, {
+                'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
+            })
+            self.ref = db.reference('/Products')
+            self.orders_ref = db.reference('/Orders')
+        except Exception as e:
+            self.logger.error(f"Firebase initialization error: {str(e)}")
+            raise
+
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
         })
-        self.ref = db.reference('/Products')
-        self.orders_ref = db.reference('/Orders')
         
         self.api_key = os.getenv('API_KEY')
         self.api_secret = os.getenv('API_SECRET')
@@ -175,15 +185,33 @@ class ItemkuMonitor:
             if not self.bot:
                 return
                 
+            # Bersihkan karakter Markdown yang bermasalah
+            cleaned_message = (
+                message
+                .replace('*', '\\*')
+                .replace('_', '\\_')
+                .replace('`', '\\`')
+                .replace('[', '\\[')
+            )
+                
             reply_markup = ForceReply() if force_reply else markup
             self.bot.send_message(
                 self.chat_id,
-                message,
-                parse_mode='Markdown',
+                cleaned_message,
+                parse_mode='MarkdownV2', # Gunakan MarkdownV2
                 reply_markup=reply_markup
             )
         except Exception as e:
             self.logger.error(f"Failed to send Telegram message: {str(e)}")
+            # Coba kirim tanpa formatting jika gagal
+            try:
+                self.bot.send_message(
+                    self.chat_id,
+                    message.replace('*', '').replace('`', ''),
+                    reply_markup=reply_markup
+                )
+            except Exception as e2:
+                self.logger.error(f"Failed to send plain message: {str(e2)}")
 
     def process_pending_orders(self, orders):
         for order in orders:
@@ -198,9 +226,10 @@ class ItemkuMonitor:
                     
                 quantity = order.get('quantity', 1)
                 
+                # Escape karakter khusus
                 order_message = (
-                    f"**🔔 New Order**\n"
-                    f"Order ID: `{order_id}`\n"
+                    "🔔 New Order\n"
+                    f"Order ID: {order_id}\n"
                     f"Product: {order.get('product_name', 'Unknown')}\n"
                     f"Quantity: {quantity}\n"
                     f"Price: Rp {int(order.get('price', 0)):,}"
@@ -392,18 +421,36 @@ class ItemkuMonitor:
     def monitor(self):
         print(f"{Fore.CYAN}Starting Monitor...{Style.RESET_ALL}")
         
+        retry_count = 0
+        max_retries = 3
+        
         try:
             while True:
                 try:
                     orders = self.get_recent_orders()
+                    if not orders and retry_count < max_retries:
+                        retry_count += 1
+                        self.logger.warning(f"No orders received, retrying ({retry_count}/{max_retries})...")
+                        time.sleep(5)
+                        continue
+                        
+                    retry_count = 0  # Reset counter on success
                     os.system('cls' if os.name == 'nt' else 'clear')
                     self.display_orders(orders)
                     self.process_pending_orders(orders)
                     time.sleep(10)
+                    
                 except Exception as e:
                     self.logger.error(f"Error in monitor loop: {str(e)}")
-                    time.sleep(10)  # Continue monitoring even if there's an error
-                
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        self.logger.info(f"Retrying in 10 seconds ({retry_count}/{max_retries})...")
+                        time.sleep(10)
+                    else:
+                        self.logger.error("Max retries reached, restarting monitor...")
+                        retry_count = 0
+                        time.sleep(30)
+                    
         except KeyboardInterrupt:
             print(f"\n{Fore.YELLOW}Monitor stopped{Style.RESET_ALL}")
 
