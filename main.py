@@ -24,12 +24,18 @@ class ItemkuMonitor:
         self.logger = logging.getLogger(__name__)
         
         try:
+            # Ensure private key is properly formatted
+            private_key = os.getenv('FIREBASE_PRIVATE_KEY')
+            if private_key:
+                # Remove quotes if present and properly handle newlines
+                private_key = private_key.strip('"\'').replace('\\n', '\n')
+            
             # Create the credential dictionary from environment variables
             cred_dict = {
                 "type": "service_account",
                 "project_id": os.getenv('FIREBASE_PROJECT_ID'),
                 "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID'),
-                "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
+                "private_key": private_key,
                 "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
                 "client_id": os.getenv('FIREBASE_CLIENT_ID'),
                 "auth_uri": os.getenv('FIREBASE_AUTH_URI'),
@@ -38,23 +44,39 @@ class ItemkuMonitor:
                 "client_x509_cert_url": os.getenv('FIREBASE_CLIENT_CERT_URL')
             }
             
-            cred = credentials.Certificate(cred_dict)
+            # Validate required credentials
+            required_fields = ['project_id', 'private_key', 'client_email']
+            missing_fields = [field for field in required_fields if not cred_dict.get(field)]
             
-            # Initialize Firebase only once
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
-            })
+            if missing_fields:
+                raise ValueError(f"Missing required Firebase credentials: {', '.join(missing_fields)}")
+            
+            # Check if Firebase app is already initialized
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(cred_dict)
+                firebase_admin.initialize_app(cred, {
+                    'databaseURL': os.getenv('FIREBASE_DATABASE_URL', 'https://itemku-proj-default-rtdb.firebaseio.com')
+                })
+            
             self.ref = db.reference('/Products')
             self.orders_ref = db.reference('/Orders')
+            
+        except ValueError as ve:
+            self.logger.error(f"Firebase credential error: {str(ve)}")
+            raise
         except Exception as e:
             self.logger.error(f"Firebase initialization error: {str(e)}")
             raise
         
-        # Rest of the initialization remains the same
+        # Initialize API credentials
         self.api_key = os.getenv('API_KEY')
         self.api_secret = os.getenv('API_SECRET')
+        if not self.api_key or not self.api_secret:
+            raise ValueError("API_KEY and API_SECRET must be provided in environment variables")
+        
         self.base_url = "https://tokoku-gateway.itemku.com/api"
         
+        # Initialize Telegram bot
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.manual_process = {}
@@ -64,6 +86,7 @@ class ItemkuMonitor:
             self.setup_telegram_handlers()
         else:
             self.bot = None
+            self.logger.warning("Telegram bot not configured - messaging features will be disabled")
 
     def setup_telegram_handlers(self):
         @self.bot.callback_query_handler(func=lambda call: True)
@@ -297,9 +320,16 @@ class ItemkuMonitor:
         
     def get_available_account(self, product_id, order_quantity=1):
         try:
-            # Verify Firebase connection first
+            # Add connection verification
             if not self.ref:
                 raise Exception("Firebase reference not initialized")
+            
+            # Test the connection with a simple read
+            try:
+                self.ref.get_if_changed('test_key')
+            except Exception as conn_error:
+                self.logger.error(f"Firebase connection test failed: {str(conn_error)}")
+                raise Exception("Failed to verify Firebase connection")
                 
             product_data = self.ref.child(str(product_id)).get()
             if not product_data:
@@ -327,18 +357,22 @@ class ItemkuMonitor:
             available_accounts.sort(key=lambda x: x[2])
             idx, account, _ = available_accounts[0]
             
-            # Add error handling for the update operation
             try:
                 new_current_user = account.get('currentUser', 0) + order_quantity
-                update_result = self.ref.child(str(product_id)).child('accounts').child(str(idx)).update({
+                update_data = {
                     'currentUser': new_current_user,
                     'lastUsed': int(time.time() * 1000)
-                })
+                }
                 
-                if update_result is None:  # Firebase update succeeded
-                    return account, None
-                else:
-                    raise Exception("Failed to update account usage")
+                # Use transaction to ensure atomic update
+                def update_transaction(current_data):
+                    if current_data is None:
+                        return update_data
+                    current_data.update(update_data)
+                    return current_data
+                
+                self.ref.child(str(product_id)).child('accounts').child(str(idx)).transaction(update_transaction)
+                return account, None
                     
             except Exception as update_error:
                 self.logger.error(f"Failed to update account usage: {str(update_error)}")
@@ -346,9 +380,7 @@ class ItemkuMonitor:
             
         except Exception as e:
             error_message = str(e)
-            # Clean up the error message for logging
             self.logger.error(f"Error getting available account: {error_message}")
-            # Return a simplified error message that won't cause Telegram formatting issues
             return None, "Database error occurred"
         
     def get_recent_orders(self):
