@@ -31,6 +31,7 @@ class ItemkuMonitor:
             else:
                 cred = credentials.Certificate("itemku.json")
                 
+            # Initialize Firebase only once
             firebase_admin.initialize_app(cred, {
                 'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
             })
@@ -39,10 +40,6 @@ class ItemkuMonitor:
         except Exception as e:
             self.logger.error(f"Firebase initialization error: {str(e)}")
             raise
-
-        firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://itemku-proj-default-rtdb.firebaseio.com'
-        })
         
         self.api_key = os.getenv('API_KEY')
         self.api_secret = os.getenv('API_SECRET')
