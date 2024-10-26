@@ -223,11 +223,13 @@ class ItemkuMonitor:
                     
                 quantity = order.get('quantity', 1)
                 
-                # Escape karakter khusus
+                # Escape product name for Telegram
+                product_name = self.escape_telegram_message(order.get('product_name', 'Unknown'))
+                
                 order_message = (
                     "🔔 New Order\n"
                     f"Order ID: {order_id}\n"
-                    f"Product: {order.get('product_name', 'Unknown')}\n"
+                    f"Product: {product_name}\n"
                     f"Quantity: {quantity}\n"
                     f"Price: Rp {int(order.get('price', 0)):,}"
                 )
@@ -238,40 +240,20 @@ class ItemkuMonitor:
                     markup = InlineKeyboardMarkup()
                     markup.row(
                         InlineKeyboardButton(
-                            "**🔧 Process Manually**",
+                            "🔧 Process Manually",
                             callback_data=f"manual_process_{order_id}"
                         )
                     )
                     
+                    # Escape error message for Telegram
+                    escaped_error = self.escape_telegram_message(error)
                     error_message = (
-                        f"**❌ Stock Not Available**\n"
+                        "❌ Stock Not Available\n"
                         f"Order ID: `{order_id}`\n"
-                        f"Error: {error}"
+                        f"Error: {escaped_error}"
                     )
                     self.send_telegram_message(error_message, markup)
                     continue
-                
-                if account:
-                    email = account.get('email', '')
-                    delivery_info = [email]
-                    if not any(keyword in email.lower() for keyword in ['token', 'invite']):
-                        delivery_info.append(account.get('password', ''))
-                    
-                    success, message = self.process_order(order_id, "DELIVER", delivery_info)
-                    if success:
-                        success_message = (
-                            f"**✅ Order Delivered**\n"
-                            f"Order ID: `{order_id}`\n"
-                            f"Info: `{' | '.join(delivery_info)}`"
-                        )
-                        self.send_telegram_message(success_message)
-                    else:
-                        error_message = (
-                            f"**❌ Delivery Failed**\n"
-                            f"Order ID: `{order_id}`\n"
-                            f"Error: {message}"
-                        )
-                        self.send_telegram_message(error_message)
 
     def process_order(self, order_id, action, delivery_info=None):
         try:
@@ -305,6 +287,10 @@ class ItemkuMonitor:
         
     def get_available_account(self, product_id, order_quantity=1):
         try:
+            # Verify Firebase connection first
+            if not self.ref:
+                raise Exception("Firebase reference not initialized")
+                
             product_data = self.ref.child(str(product_id)).get()
             if not product_data:
                 return None, "Product not found"
@@ -331,16 +317,29 @@ class ItemkuMonitor:
             available_accounts.sort(key=lambda x: x[2])
             idx, account, _ = available_accounts[0]
             
-            new_current_user = account.get('currentUser', 0) + order_quantity
-            self.ref.child(str(product_id)).child('accounts').child(str(idx)).update({
-                'currentUser': new_current_user,
-                'lastUsed': int(time.time() * 1000)
-            })
+            # Add error handling for the update operation
+            try:
+                new_current_user = account.get('currentUser', 0) + order_quantity
+                update_result = self.ref.child(str(product_id)).child('accounts').child(str(idx)).update({
+                    'currentUser': new_current_user,
+                    'lastUsed': int(time.time() * 1000)
+                })
+                
+                if update_result is None:  # Firebase update succeeded
+                    return account, None
+                else:
+                    raise Exception("Failed to update account usage")
+                    
+            except Exception as update_error:
+                self.logger.error(f"Failed to update account usage: {str(update_error)}")
+                return None, f"Account update failed: {str(update_error)}"
             
-            return account, None
         except Exception as e:
-            self.logger.error(f"Error getting available account: {str(e)}")
-            return None, f"Error: {str(e)}"
+            error_message = str(e)
+            # Clean up the error message for logging
+            self.logger.error(f"Error getting available account: {error_message}")
+            # Return a simplified error message that won't cause Telegram formatting issues
+            return None, "Database error occurred"
         
     def get_recent_orders(self):
         try:
